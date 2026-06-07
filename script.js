@@ -254,9 +254,10 @@ async function initDashboard() {
         let monSet = new Set();
         let gvSet = new Set();
         rosterEntries.forEach(r => {
-            if (r.lop) classSet.add(r.lop);
-            if (r.ma_mon) monSet.add(r.ma_mon);
-            if (r.giang_vien) gvSet.add(r.giang_vien);
+            // Split chuỗi gộp (VD: "MA08101, MA09202") thành từng giá trị riêng lẻ
+            if (r.lop) r.lop.split(',').map(v => v.trim()).filter(Boolean).forEach(v => classSet.add(v));
+            if (r.ma_mon) r.ma_mon.split(',').map(v => v.trim()).filter(Boolean).forEach(v => monSet.add(v));
+            if (r.giang_vien) r.giang_vien.split(',').map(v => v.trim()).filter(Boolean).forEach(v => gvSet.add(v));
         });
         (s.student_classes || []).forEach(c => { if (c.class_name) classSet.add(c.class_name); });
 
@@ -734,7 +735,7 @@ function fbCard(fb, isReply) {
 async function agreeWithFeedback(parentId) {
     if (window.isAgreeing) return;
     window.isAgreeing = true;
-    
+
     // Lấy nội dung comment gốc
     const { data: parentFb } = await supabase.from('feedbacks').select('*').eq('id', parentId).single();
     if (!parentFb) { window.isAgreeing = false; return; }
@@ -765,7 +766,7 @@ async function agreeWithFeedback(parentId) {
 
     await renderTimeline(State.currentStudentId);
     await initDashboard();
-    
+
     window.isAgreeing = false;
 }
 
@@ -855,7 +856,7 @@ async function doSend(content) {
             .select('id, content')
             .eq('student_id', State.currentStudentId)
             .like('content', '%[CẦN CTSV HỖ TRỢ]%');
-        
+
         if (fbs && fbs.length > 0) {
             for (let fb of fbs) {
                 const newContent = fb.content.replace('[CẦN CTSV HỖ TRỢ]', '[CTSV ĐÃ XỬ LÝ]');
@@ -895,7 +896,7 @@ window.escalateFeedback = async (fbId, studentId) => {
     // 1. Cập nhật lại nội dung feedback
     const { data: fbData, error: errGet } = await supabase.from('feedbacks').select('content').eq('id', fbId).single();
     if (errGet || !fbData) return alert('Lỗi truy xuất bình luận');
-    
+
     const newContent = '[CẦN CTSV HỖ TRỢ] ' + (fbData.content || '');
     const { error: errUpdate } = await supabase.from('feedbacks').update({ content: newContent }).eq('id', fbId);
     if (errUpdate) return alert('Lỗi cập nhật bình luận');
@@ -1042,17 +1043,41 @@ async function deleteStudent() {
 let rosterCache = [];
 let rosterLoaded = false;
 
-// Tải toàn bộ student_roster từ Supabase (392 SV ≈ 30KB, rất nhẹ)
+// Tải toàn bộ student_roster từ Supabase
 async function loadRoster() {
     if (rosterLoaded) return;
     const { data, error } = await supabase
         .from('student_roster')
         .select('mssv, ho_ten, lop, ma_mon, giang_vien, nganh')
         .order('mssv');
+
     if (!error && data) {
-        rosterCache = data;
+        // Gộp dữ liệu nếu 1 sinh viên có nhiều dòng (do import CSV gốc thô)
+        const aggregated = Object.values(data.reduce((acc, curr) => {
+            const key = (curr.mssv || '').trim().toUpperCase();
+            if (!key) return acc;
+            
+            if (!acc[key]) {
+                acc[key] = { ...curr, mssv: key, _lopSet: new Set(), _monSet: new Set(), _gvSet: new Set(), _nganhSet: new Set() };
+            }
+            if (curr.lop) acc[key]._lopSet.add(curr.lop.trim());
+            if (curr.ma_mon) acc[key]._monSet.add(curr.ma_mon.trim());
+            if (curr.giang_vien) acc[key]._gvSet.add(curr.giang_vien.trim());
+            if (curr.nganh) acc[key]._nganhSet.add(curr.nganh.trim());
+            return acc;
+        }, {}));
+
+        rosterCache = aggregated.map(item => ({
+            mssv: item.mssv,
+            ho_ten: item.ho_ten,
+            lop: Array.from(item._lopSet).join(', '),
+            ma_mon: Array.from(item._monSet).join(', '),
+            giang_vien: Array.from(item._gvSet).join(', '),
+            nganh: Array.from(item._nganhSet).join(', ')
+        }));
+
         rosterLoaded = true;
-        console.log(`📋 Roster loaded: ${data.length} SV`);
+        console.log(`📋 Roster loaded: ${rosterCache.length} SV (từ ${data.length} dòng raw)`);
     } else {
         console.warn('⚠️ Không tải được roster:', error);
     }
@@ -1617,7 +1642,7 @@ async function renderBugReports() {
     let html = '';
     for (let b of bugs) {
         const timeStr = timeAgo(b.created_at);
-        const statusBadge = b.status === 'resolved' 
+        const statusBadge = b.status === 'resolved'
             ? `<span class="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded text-[10px] uppercase font-bold">Đã xử lý</span>`
             : `<span class="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-[10px] uppercase font-bold">Chưa xử lý</span>`;
 
@@ -1645,9 +1670,9 @@ async function renderBugReports() {
 }
 
 async function resolveBug(id) {
-    if(!confirm('Đánh dấu báo cáo này là "Đã xử lý"?')) return;
+    if (!confirm('Đánh dấu báo cáo này là "Đã xử lý"?')) return;
     const { error } = await supabase.from('bug_reports').update({ status: 'resolved' }).eq('id', id);
-    if(error) alert('Lỗi: ' + error.message);
+    if (error) alert('Lỗi: ' + error.message);
     else renderBugReports();
 }
 
@@ -1664,7 +1689,7 @@ async function resolveBug(id) {
 //          dùng để tạo id như 'tabContentDashboard', 'tabDashboard'
 // ══════════════════════════════════════════════════════════════════
 function switchTab(tab, silent) {
-    ['dashboard', 'analytics', 'admin'].forEach(t => {
+    ['dashboard', 'analytics', 'admin', 'about'].forEach(t => {
         const content = document.getElementById('tabContent' + cap(t));
         if (content) content.classList.toggle('hidden', t !== tab); // ẩn tab không active
         const btn = document.getElementById('tab' + cap(t));
@@ -1740,7 +1765,7 @@ function getTargetStudentsForNotif() {
     } else if (State.user && State.user.rawRole === 'CTSV') {
         targetStudents = targetStudents.filter(s => {
             const fbs = s.feedbacks || [];
-            
+
             // ĐÃ ĐỌC: Nếu thao tác mới nhất trên sinh viên này là của CTSV và trong vòng 24h, thì xem như CTSV đã xử lý/đọc
             if (fbs.length > 0) {
                 const latestFb = fbs.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
@@ -1749,7 +1774,7 @@ function getTargetStudentsForNotif() {
                     return false;
                 }
             }
-            
+
             // Loại 1: Cần CTSV hỗ trợ (dựa trên feedback mới nhất)
             let needsSupport = false;
             if (fbs.length > 0) {
@@ -1758,7 +1783,7 @@ function getTargetStudentsForNotif() {
                     needsSupport = true;
                 }
             }
-            
+
             // Loại 2: Cập nhật của các trạng thái đỏ (vì base filter đã lọc <= 24h)
             const isRedUpdate = (s.status === 'red');
 
@@ -1777,7 +1802,7 @@ function getTargetStudentsForNotif() {
                     }
                 }
             }
-            
+
             return needsSupport || isRedUpdate || hasGvReplyToCtsv;
         });
     }
@@ -2276,7 +2301,7 @@ async function handleExcelUpload(event) {
     const pBar = document.getElementById('excelProgressBar');
     const pPercent = document.getElementById('excelProgressPercent');
     const pBtn = document.getElementById('excelProgressCloseBtn');
-    
+
     modal.classList.remove('hidden');
     modal.classList.add('flex');
     setTimeout(() => {
@@ -2299,14 +2324,14 @@ async function handleExcelUpload(event) {
             try {
                 const data = new Uint8Array(e.target.result);
                 const workbook = XLSX.read(data, { type: 'array' });
-                
+
                 // Lấy sheet đầu tiên
                 const sheetName = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[sheetName];
-                
+
                 // Chuyển thành mảng các mảng (header: 1)
                 const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-                
+
                 if (rows.length < 2) {
                     throw new Error("File Excel không có dữ liệu hoặc không đúng định dạng.");
                 }
@@ -2380,7 +2405,7 @@ async function handleExcelUpload(event) {
 
                 for (let i = 0; i < finalRows.length; i += BATCH_SIZE) {
                     const batch = finalRows.slice(i, i + BATCH_SIZE);
-                    
+
                     const { error } = await supabase
                         .from('student_roster')
                         .upsert(batch, { onConflict: 'mssv' });
@@ -2391,7 +2416,7 @@ async function handleExcelUpload(event) {
                     }
 
                     successCount += batch.length;
-                    
+
                     // Cập nhật progress bar
                     const percent = 30 + Math.floor((successCount / finalRows.length) * 70);
                     pBar.style.width = `${percent}%`;
@@ -2416,7 +2441,7 @@ async function handleExcelUpload(event) {
                 pBtn.classList.remove('hidden');
             }
         };
-        
+
         reader.onerror = (err) => {
             console.error(err);
             pText.textContent = "❌ Lỗi không thể đọc file Excel.";
