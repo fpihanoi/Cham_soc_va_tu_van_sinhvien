@@ -247,7 +247,8 @@ async function initDashboard() {
     // Tiền xử lý dữ liệu để các bộ lọc UI cũ vẫn chạy đúng
     let processedStudents = (stData || []).map(s => {
         // Tìm tất cả các record của sinh viên này trong rosterCache (không phân biệt hoa thường)
-        const rosterEntries = rosterCache ? rosterCache.filter(r => r.mssv.toLowerCase() === s.mssv.toLowerCase()) : [];
+        const sMssv = String(s.mssv || '').trim().toLowerCase();
+        const rosterEntries = rosterCache ? rosterCache.filter(r => String(r.mssv || '').trim().toLowerCase() === sMssv) : [];
         const nganh = rosterEntries.length > 0 ? rosterEntries[0].nganh : 'Khác';
 
         let classSet = new Set();
@@ -1046,17 +1047,42 @@ let rosterLoaded = false;
 // Tải toàn bộ student_roster từ Supabase
 async function loadRoster() {
     if (rosterLoaded) return;
-    const { data, error } = await supabase
-        .from('student_roster')
-        .select('mssv, ho_ten, lop, ma_mon, giang_vien, nganh')
-        .order('mssv');
 
-    if (!error && data) {
+    let allData = [];
+    let from = 0;
+    const limit = 1000;
+    let keepGoing = true;
+
+    while (keepGoing) {
+        const { data, error } = await supabase
+            .from('student_roster')
+            .select('mssv, ho_ten, lop, ma_mon, giang_vien, nganh')
+            .order('mssv')
+            .range(from, from + limit - 1);
+
+        if (error) {
+            console.warn('⚠️ Không tải được roster:', error);
+            break;
+        }
+
+        if (data && data.length > 0) {
+            allData = allData.concat(data);
+            from += limit;
+            if (data.length < limit) {
+                keepGoing = false;
+            }
+        } else {
+            keepGoing = false;
+        }
+    }
+
+    const data = allData;
+    if (data.length > 0) {
         // Gộp dữ liệu nếu 1 sinh viên có nhiều dòng (do import CSV gốc thô)
         const aggregated = Object.values(data.reduce((acc, curr) => {
             const key = (curr.mssv || '').trim().toUpperCase();
             if (!key) return acc;
-            
+
             if (!acc[key]) {
                 acc[key] = { ...curr, mssv: key, _lopSet: new Set(), _monSet: new Set(), _gvSet: new Set(), _nganhSet: new Set() };
             }
