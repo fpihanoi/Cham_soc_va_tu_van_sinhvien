@@ -260,7 +260,7 @@ async function initDashboard() {
             if (r.ma_mon) r.ma_mon.split(',').map(v => v.trim()).filter(Boolean).forEach(v => monSet.add(v));
             if (r.giang_vien) r.giang_vien.split(',').map(v => v.trim()).filter(Boolean).forEach(v => gvSet.add(v));
         });
-        (s.student_classes || []).forEach(c => { 
+        (s.student_classes || []).forEach(c => {
             if (c.class_name) {
                 c.class_name.split(',').map(v => v.trim()).filter(Boolean).forEach(v => classSet.add(v));
             }
@@ -1372,12 +1372,26 @@ function renderAnalytics() {
     const yAll = all.filter(s => s.status === 'yellow').length;
     const rAll = all.filter(s => s.status === 'red').length;
 
+    const isGV = State.user && State.user.rawRole === 'GV';
+    const ucode = isGV ? State.user.code.toLowerCase() : '';
+    const uname = isGV ? State.user.name.toLowerCase() : '';
+
     let totalRoster = 0;
     if (rosterCache && rosterCache.length > 0) {
         rosterCache.forEach(s => {
-            if (!s.nganh) return;
-            const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
-            if (userMajors.length > 0 && !sMajors.some(m => userMajors.includes(m))) return;
+            if (isGV) {
+                // GV chỉ đếm SV mà mình đang dạy
+                if (!s.giang_vien) return;
+                const gvStr = s.giang_vien.toLowerCase();
+                if (!gvStr.includes(ucode) && !gvStr.includes(uname)) return;
+            } else {
+                // CNBM/Admin: đếm theo ngành quản lý
+                if (userMajors.length > 0) {
+                    if (!s.nganh) return;
+                    const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
+                    if (!sMajors.some(m => userMajors.includes(m))) return;
+                }
+            }
             totalRoster++;
         });
     }
