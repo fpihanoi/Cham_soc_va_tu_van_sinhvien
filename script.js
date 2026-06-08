@@ -260,7 +260,11 @@ async function initDashboard() {
             if (r.ma_mon) r.ma_mon.split(',').map(v => v.trim()).filter(Boolean).forEach(v => monSet.add(v));
             if (r.giang_vien) r.giang_vien.split(',').map(v => v.trim()).filter(Boolean).forEach(v => gvSet.add(v));
         });
-        (s.student_classes || []).forEach(c => { if (c.class_name) classSet.add(c.class_name); });
+        (s.student_classes || []).forEach(c => { 
+            if (c.class_name) {
+                c.class_name.split(',').map(v => v.trim()).filter(Boolean).forEach(v => classSet.add(v));
+            }
+        });
 
         const classStr = Array.from(classSet).join(', ');
         const monStr = Array.from(monSet).join(', ');
