@@ -40,6 +40,14 @@ const removeAccents = (str) => {
     if (!str) return '';
     return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase();
 };
+
+// Escape HTML để phòng chống XSS khi render nội dung người dùng nhập vào innerHTML
+const escapeHtml = (str) => {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+};
 // [ĐÃ XÓA MOCK DATABASE] - App đang chuyển sang dùng Supabase.
 // Các đoạn code dưới dùng DB.* sẽ được viết lại trong các bước tiếp theo.
 // ══════════════════════════════════════════════════════════════════
@@ -280,7 +288,9 @@ async function initDashboard() {
             giang_vien: gvStr,
             nganh: nganh,
             latestFbContent: fbs[0] ? fbs[0].content : null,
-            latestFbCreatedAt: fbs[0] ? fbs[0].created_at : null
+            latestFbCreatedAt: fbs[0] ? fbs[0].created_at : null,
+            _searchMssv: removeAccents(s.mssv),
+            _searchName: removeAccents(s.ho_ten)
         };
     });
 
@@ -434,11 +444,7 @@ function renderStudents() {
     const classF = document.getElementById('classFilter').value;
     const majorF = document.getElementById('majorFilter') ? document.getElementById('majorFilter').value : 'all';
 
-    const getLatestTime = (s) => {
-        const t1 = s.updated_at ? new Date(s.updated_at).getTime() : 0;
-        const t2 = s.latestFbCreatedAt ? new Date(s.latestFbCreatedAt).getTime() : 0;
-        return Math.max(t1, t2);
-    };
+    // Sử dụng hàm getLatestTime() global (SECTION 12)
 
     // Sort: Ưu tiên thẻ Đỏ lên đầu, sau đó mới sắp xếp theo thay đổi mới nhất
     let list = [...State.students].sort((a, b) => {
@@ -481,7 +487,7 @@ function renderStudents() {
     if (search) {
         const q = removeAccents(search);
         list = list.filter(s =>
-            removeAccents(s.mssv).includes(q) || removeAccents(s.ho_ten).includes(q)
+            (s._searchMssv || removeAccents(s.mssv)).includes(q) || (s._searchName || removeAccents(s.ho_ten)).includes(q)
         );
     }
 
@@ -502,11 +508,7 @@ function studentCard(s) {
     const label = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[st];
     const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[st];
 
-    const getLatestTime = (st) => {
-        const t1 = st.updated_at ? new Date(st.updated_at).getTime() : 0;
-        const t2 = st.latestFbCreatedAt ? new Date(st.latestFbCreatedAt).getTime() : 0;
-        return Math.max(t1, t2);
-    };
+    // Sử dụng hàm getLatestTime() global (SECTION 12)
     const latestTime = getLatestTime(s);
 
     // Badge "Mới" xuất hiện nếu có thay đổi trong vòng 30 phút
@@ -705,7 +707,7 @@ function fbCard(fb, isReply) {
                 </div>
                 <span class="text-xs text-slate-400">${t}</span>
             </div>
-            <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${finalContent}</p>
+            <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${escapeHtml(finalContent)}</p>
             <div class="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-white/60">
                 ${resolveBtn}
                 <!-- Nút "Trả lời" chỉ hiện ở feedback gốc, không hiện ở reply -->
@@ -779,8 +781,89 @@ async function sendFeedback() {
     const content = document.getElementById('feedbackInput').value.trim();
     if (!content || !State.currentStudentId) return;
 
-    // Giảng viên tiếp theo không cần nhập lớp đang dạy nữa vì thông tin lớp đã hiện đầy đủ từ danh sách kỳ học.
+    let newStatusToSet = null;
+
+    const s = State.students.find(x => x.id === State.currentStudentId);
+    if (s && !State.replyParentId && ['GV', 'CNBM'].includes(State.user.rawRole) && ['green', 'yellow'].includes(s.status || 'green')) {
+        const currentStatus = s.status || 'green';
+        const currentStatusName = currentStatus === 'green' ? '🟢 Ổn định' : '🟡 Theo dõi';
+        
+        newStatusToSet = await new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay active';
+            overlay.style.zIndex = '9999';
+            
+            let optionsHtml = '';
+            const statuses = [
+                { id: 'red', label: '🔴 Cảnh báo', bg: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100' },
+                { id: 'yellow', label: '🟡 Theo dõi', bg: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' },
+                { id: 'green', label: '🟢 Ổn định', bg: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' }
+            ];
+            
+            statuses.forEach(st => {
+                if (st.id !== currentStatus) {
+                    optionsHtml += `<button class="w-full text-left px-4 py-3 border rounded-xl transition mb-3 font-bold ${st.bg}" onclick="window.resolveStatusChange('${st.id}')">Chuyển sang ${st.label}</button>`;
+                }
+            });
+
+            overlay.innerHTML = `
+                <div class="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl transform transition-all relative mx-4">
+                    <button onclick="window.resolveStatusChange('CANCEL')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition text-2xl leading-none">&times;</button>
+                    <h3 class="text-lg font-black text-slate-800 mb-2 pr-6">Thay đổi trạng thái?</h3>
+                    <p class="text-sm text-slate-500 mb-4">Trạng thái hiện tại đang là <span class="font-bold text-slate-700">${currentStatusName}</span>. Bạn có muốn đổi trạng thái cho sinh viên này cùng với bình luận không?</p>
+                    ${optionsHtml}
+                    <button class="w-full mt-1 text-slate-600 font-bold bg-slate-50 border-slate-200 hover:bg-slate-100 py-3 px-4 rounded-xl border transition" onclick="window.resolveStatusChange(null)">Chỉ gửi bình luận (Giữ nguyên)</button>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            window.resolveStatusChange = (status) => {
+                document.body.removeChild(overlay);
+                delete window.resolveStatusChange;
+                resolve(status);
+            };
+        });
+    }
+
+    // Nếu người dùng bấm X để huỷ thao tác
+    if (newStatusToSet === 'CANCEL') return;
+
+    // Tiến hành gửi feedback vào database (gọi hàm doSend đã có sẵn)
     await doSend(content);
+
+    // Nếu có chọn thay đổi trạng thái
+    if (newStatusToSet) {
+        const nowISO = new Date().toISOString();
+        const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[newStatusToSet];
+        const text = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[newStatusToSet];
+
+        // 1. Cập nhật trạng thái sinh viên
+        await supabase.from('students')
+            .update({ status: newStatusToSet, updated_at: nowISO })
+            .eq('id', State.currentStudentId);
+
+        // 2. Thêm một feedback hệ thống ghi nhận sự thay đổi trạng thái
+        await supabase.from('feedbacks').insert([{
+            student_id: State.currentStudentId,
+            role: State.user.rawRole,
+            author_name: State.user.name,
+            author_code: State.user.code,
+            content: `[${emoji} ${text}] Cập nhật trạng thái từ phản hồi: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`,
+            parent_id: null
+        }]);
+
+        // 3. Cập nhật giao diện modal hiện tại
+        const sToUpdate = State.students.find(x => x.id === State.currentStudentId);
+        if (sToUpdate) {
+            sToUpdate.status = newStatusToSet;
+            document.getElementById('modalMeta').textContent =
+                `${sToUpdate.mssv} · ${sToUpdate.lop || 'N/A'} · ${emoji} ${text}`;
+        }
+        
+        // 4. Render lại giao diện
+        await renderTimeline(State.currentStudentId);
+        await initDashboard();
+    }
 }
 
 // Xử lý CTSV Đánh dấu đã giải quyết
@@ -906,11 +989,7 @@ window.escalateFeedback = async (fbId, studentId) => {
     const { error: errUpdate } = await supabase.from('feedbacks').update({ content: newContent }).eq('id', fbId);
     if (errUpdate) return alert('Lỗi cập nhật bình luận');
 
-    // 2. Cập nhật student_roster để nổi cờ lên màn hình CTSV
-    await supabase.from('student_roster').update({
-        latestFb: new Date().toISOString(),
-        latestFbContent: newContent
-    }).eq('id', studentId);
+    // [ĐÃ XÓA] Không cần ghi vào student_roster — bảng này chỉ chứa dữ liệu import CSV
 
     // 3. Render lại
     renderTimeline(studentId);
@@ -1109,7 +1188,7 @@ async function loadRoster() {
         rosterLoaded = true;
         console.log(`📋 Roster loaded: ${rosterCache.length} SV (từ ${data.length} dòng raw)`);
     } else {
-        console.warn('⚠️ Không tải được roster:', error);
+        console.warn('⚠️ Roster trống — không có dữ liệu');
     }
 }
 
@@ -2123,7 +2202,7 @@ async function generateReport() {
             <td class="text-xs text-slate-600 whitespace-nowrap">${lopDisplay}</td>
             <td class="text-xs text-slate-600 whitespace-nowrap">${s.giang_vien || 'N/A'}</td>
             <td class="text-xs text-slate-600 whitespace-nowrap">${authorLabel}</td>
-            <td class="text-sm text-slate-700" style="min-width:260px;max-width:400px">${f.content}</td>
+            <td class="text-sm text-slate-700" style="min-width:260px;max-width:400px">${escapeHtml(f.content)}</td>
             <td class="text-xs text-slate-400 whitespace-nowrap">${fbTime}</td>
         </tr>`;
     }).join('');
