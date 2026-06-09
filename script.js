@@ -787,19 +787,19 @@ async function sendFeedback() {
     if (s && !State.replyParentId && ['GV', 'CNBM'].includes(State.user.rawRole) && ['green', 'yellow'].includes(s.status || 'green')) {
         const currentStatus = s.status || 'green';
         const currentStatusName = currentStatus === 'green' ? '🟢 Ổn định' : '🟡 Theo dõi';
-        
+
         newStatusToSet = await new Promise((resolve) => {
             const overlay = document.createElement('div');
             overlay.className = 'modal-overlay active';
             overlay.style.zIndex = '9999';
-            
+
             let optionsHtml = '';
             const statuses = [
                 { id: 'red', label: '🔴 Cảnh báo', bg: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100' },
                 { id: 'yellow', label: '🟡 Theo dõi', bg: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' },
                 { id: 'green', label: '🟢 Ổn định', bg: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' }
             ];
-            
+
             statuses.forEach(st => {
                 if (st.id !== currentStatus) {
                     optionsHtml += `<button class="w-full text-left px-4 py-3 border rounded-xl transition mb-3 font-bold ${st.bg}" onclick="window.resolveStatusChange('${st.id}')">Chuyển sang ${st.label}</button>`;
@@ -828,8 +828,7 @@ async function sendFeedback() {
     // Nếu người dùng bấm X để huỷ thao tác
     if (newStatusToSet === 'CANCEL') return;
 
-    // Tiến hành gửi feedback vào database (gọi hàm doSend đã có sẵn)
-    await doSend(content);
+    let finalContent = content;
 
     // Nếu có chọn thay đổi trạng thái
     if (newStatusToSet) {
@@ -837,33 +836,24 @@ async function sendFeedback() {
         const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[newStatusToSet];
         const text = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[newStatusToSet];
 
+        finalContent = `[${emoji} ${text}] ${content}`;
+
         // 1. Cập nhật trạng thái sinh viên
         await supabase.from('students')
             .update({ status: newStatusToSet, updated_at: nowISO })
             .eq('id', State.currentStudentId);
 
-        // 2. Thêm một feedback hệ thống ghi nhận sự thay đổi trạng thái
-        await supabase.from('feedbacks').insert([{
-            student_id: State.currentStudentId,
-            role: State.user.rawRole,
-            author_name: State.user.name,
-            author_code: State.user.code,
-            content: `[${emoji} ${text}] Cập nhật trạng thái từ phản hồi: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`,
-            parent_id: null
-        }]);
-
-        // 3. Cập nhật giao diện modal hiện tại
+        // 2. Cập nhật giao diện modal hiện tại
         const sToUpdate = State.students.find(x => x.id === State.currentStudentId);
         if (sToUpdate) {
             sToUpdate.status = newStatusToSet;
             document.getElementById('modalMeta').textContent =
                 `${sToUpdate.mssv} · ${sToUpdate.lop || 'N/A'} · ${emoji} ${text}`;
         }
-        
-        // 4. Render lại giao diện
-        await renderTimeline(State.currentStudentId);
-        await initDashboard();
     }
+
+    // Tiến hành gửi feedback vào database (gọi hàm doSend đã có sẵn)
+    await doSend(finalContent);
 }
 
 // Xử lý CTSV Đánh dấu đã giải quyết
