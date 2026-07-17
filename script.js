@@ -529,9 +529,52 @@ function studentCard(s) {
         }
     }
 
+    const isCtsv = State.user && State.user.rawRole === 'CTSV';
+    let needsCtsvAttention = false;
+    
+    if (isCtsv && s.feedbacks && s.feedbacks.length > 0) {
+        const latestFb = s.feedbacks[0]; // (Giả định danh sách feedback đã sort mới nhất lên đầu)
+        const isReply = latestFb.parent_id != null;
+        const hasEscalate = latestFb.content && latestFb.content.includes('[CẦN CTSV HỖ TRỢ]');
+        
+        // Nếu comment cuối KHÔNG PHẢI CTSV, KHÔNG PHẢI là reply, và (SV bị Đỏ HOẶC có tag Hỗ trợ)
+        if (latestFb.role !== 'CTSV' && !isReply && (s.status === 'red' || hasEscalate)) {
+            needsCtsvAttention = true;
+        }
+    }
+
+    const isGvCnbm = State.user && ['GV', 'CNBM'].includes(State.user.rawRole);
+    let needsGvCnbmAttention = false;
+
+    if (isGvCnbm && s.feedbacks && s.feedbacks.length > 0) {
+        const ctsvFbs = s.feedbacks.filter(f => f.role === 'CTSV' && !f.parent_id);
+        if (ctsvFbs.length > 0) {
+            const sortedCtsvFbs = ctsvFbs.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+            const latestCtsvFb = sortedCtsvFbs[0];
+            const hasReacted = latestCtsvFb.reactions && latestCtsvFb.reactions.some(r => r.code === State.user.code);
+            const userLaterFbs = s.feedbacks.filter(f => f.author_code === State.user.code && new Date(f.created_at) > new Date(latestCtsvFb.created_at));
+            
+            if (!hasReacted && userLaterFbs.length === 0) {
+                needsGvCnbmAttention = true;
+            }
+        }
+    }
+    
+    const FIFTEEN_DAYS_MS = 15 * 24 * 60 * 60 * 1000;
+    if (isGvCnbm && (Date.now() - latestTime) > FIFTEEN_DAYS_MS) {
+        needsGvCnbmAttention = false;
+    }
+
+    let cardClasses = "bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group";
+    if (needsCtsvAttention) {
+        cardClasses = "bg-indigo-50/40 rounded-xl border-2 border-indigo-400 shadow-md flex overflow-hidden hover:shadow-lg transition-all cursor-pointer group";
+    } else if (needsGvCnbmAttention) {
+        cardClasses = "bg-amber-50/40 rounded-xl border-2 border-amber-400 shadow-md flex overflow-hidden hover:shadow-lg transition-all cursor-pointer group";
+    }
+
     return `
     <div onclick="openStudentModal(${s.id})"
-        class="bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group">
+        class="${cardClasses}">
         <!-- Dải màu trạng thái bên trái -->
         <div class="${strip} w-1.5 shrink-0"></div>
         <div class="flex-1 p-3.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 min-w-0">
@@ -716,6 +759,10 @@ function fbCard(fb, isReply) {
                 ${!isReply && ['GV', 'CNBM'].includes(State.user.rawRole) && !['CTSV', 'Admin'].includes(fb.role) && fb.author_code !== State.user.code && !agrees.some(a => a.code === State.user.code) ? `<button onclick="agreeWithFeedback(${fb.id})" class="text-xs text-slate-400 hover:text-emerald-600 transition">🤝 Cùng comment</button>` : ''}
                 <!-- Nút "Báo CTSV hỗ trợ" (CNBM báo cáo hộ GV, hoặc GV tự báo cáo bài của mình) -->
                 ${canEscalate ? `<button onclick="escalateFeedback(${fb.id}, ${fb.student_id})" class="text-xs text-rose-500 hover:text-rose-700 transition">📢 Nhờ CTSV hỗ trợ</button>` : ''}
+                <!-- Nút "Xóa" dành cho Admin -->
+                ${State.user && State.user.rawRole === 'Admin' ? `<button onclick="deleteFeedback(${fb.id})" class="text-xs text-rose-500 hover:text-rose-700 transition" title="Xóa bình luận này">🗑️ Xóa</button>` : ''}
+                <!-- Nhắc nhở thả tim cho GV/CNBM -->
+                ${!isReply && !reacted && fb.role === 'CTSV' && State.user && ['GV', 'CNBM'].includes(State.user.rawRole) ? `<span class="text-[11px] text-amber-500 font-medium animate-pulse flex items-center mr-1">Bấm thả tim để tắt thông báo ➡️</span>` : ''}
                 <!-- Nút reaction: tất cả mọi người đều có quyền thả tim -->
                 <button onclick="toggleReaction(${fb.id})" class="reaction-btn ${reacted ? 'reacted' : ''}">
                     <span>${reacted ? '❤️' : '🤍'}</span>
@@ -1016,6 +1063,28 @@ async function toggleReaction(fbId) {
     await supabase.from('feedbacks').update({ reactions: reactions }).eq('id', fbId);
     await renderTimeline(State.currentStudentId); // re-render 
     await initDashboard(); // refresh notifications and dashboard
+}
+
+// Hàm xóa bình luận tương tác với Supabase
+async function deleteFeedback(fbId) {
+    if (!confirm('Bạn có chắc chắn muốn xóa bình luận này?')) return;
+    
+    try {
+        const { error } = await supabase
+            .from('feedbacks')
+            .delete()
+            .eq('id', fbId);
+
+        if (error) throw error;
+
+        alert('Đã xóa bình luận thành công!');
+        if (State.currentStudentId) {
+            await renderTimeline(State.currentStudentId); // Tải lại Timeline
+        }
+    } catch (err) {
+        console.error('Lỗi khi xóa bình luận:', err);
+        alert('Lỗi khi xóa bình luận: ' + err.message);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1424,16 +1493,46 @@ document.addEventListener('click', (e) => {
 //  3. Line (xu hướng): số cảnh báo theo tuần
 //     – Hardcoded mock data (6 tuần, 2 series: Cảnh báo + Theo dõi)
 // ══════════════════════════════════════════════════════════════════
+function getUserGlobalStats() {
+    let userMajors = [];
+    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
+        userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
+    }
+
+    const isGV = State.user && State.user.rawRole === 'GV';
+    const ucode = isGV ? State.user.code.toLowerCase() : '';
+    const uname = isGV ? State.user.name.toLowerCase() : '';
+
+    let accessibleStudents = [];
+    if (rosterCache && rosterCache.length > 0) {
+        accessibleStudents = rosterCache.filter(s => {
+            if (isGV) {
+                if (!s.giang_vien) return false;
+                const gvStr = s.giang_vien.toLowerCase();
+                if (!gvStr.includes(ucode) && !gvStr.includes(uname)) return false;
+            } else {
+                if (userMajors.length > 0) {
+                    if (!s.nganh) return false;
+                    const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
+                    if (!sMajors.some(m => userMajors.includes(m))) return false;
+                }
+            }
+            return true;
+        });
+    } else {
+        accessibleStudents = State.students || [];
+    }
+
+    return { userMajors, accessibleStudents };
+}
+
 function renderAnalytics() {
     // Hủy chart cũ để tránh lỗi "canvas already in use"
     Object.values(State.charts).forEach(c => c?.destroy?.());
     State.charts = {};
 
     // ── Chuẩn bị dữ liệu ──
-    let userMajors = [];
-    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
-        userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
-    }
+    const { userMajors, accessibleStudents } = getUserGlobalStats();
 
     const all = State.students; // SV đã có feedback
     const studentsWithFeedback = all.length;
@@ -1441,41 +1540,26 @@ function renderAnalytics() {
     const yAll = all.filter(s => s.status === 'yellow').length;
     const rAll = all.filter(s => s.status === 'red').length;
 
-    const isGV = State.user && State.user.rawRole === 'GV';
-    const ucode = isGV ? State.user.code.toLowerCase() : '';
-    const uname = isGV ? State.user.name.toLowerCase() : '';
-
-    let totalRoster = 0;
-    if (rosterCache && rosterCache.length > 0) {
-        rosterCache.forEach(s => {
-            if (isGV) {
-                // GV chỉ đếm SV mà mình đang dạy
-                if (!s.giang_vien) return;
-                const gvStr = s.giang_vien.toLowerCase();
-                if (!gvStr.includes(ucode) && !gvStr.includes(uname)) return;
-            } else {
-                // CNBM/Admin: đếm theo ngành quản lý
-                if (userMajors.length > 0) {
-                    if (!s.nganh) return;
-                    const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
-                    if (!sMajors.some(m => userMajors.includes(m))) return;
-                }
-            }
-            totalRoster++;
-        });
-    }
+    const totalRoster = accessibleStudents.length;
     const studentsWithoutFeedback = Math.max(0, totalRoster - studentsWithFeedback);
     const coveragePct = totalRoster > 0 ? ((studentsWithFeedback / totalRoster) * 100).toFixed(1) : '0.0';
 
     // ── Cập nhật 4 thẻ KPI ──
     const kpiTotal = document.getElementById('kpiTotal');
-    const kpiFb = document.getElementById('kpiFeedback');
+    const kpiG = document.getElementById('kpiGreen'); // Lưu ý đổi ID từ kpiFb -> kpiGreen
     const kpiY = document.getElementById('kpiYellow');
     const kpiR = document.getElementById('kpiRed');
+
+    const realGreen = Math.max(0, totalRoster - yAll - rAll);
+    const gPct = totalRoster > 0 ? ((realGreen / totalRoster) * 100).toFixed(1) : '0.0';
+    const yPct = totalRoster > 0 ? ((yAll / totalRoster) * 100).toFixed(1) : '0.0';
+    const rPct = totalRoster > 0 ? ((rAll / totalRoster) * 100).toFixed(1) : '0.0';
+
+    // Render kết quả kèm class CSS làm mờ cho phần trăm
     if (kpiTotal) kpiTotal.textContent = totalRoster;
-    if (kpiFb) kpiFb.textContent = studentsWithFeedback;
-    if (kpiY) kpiY.textContent = yAll;
-    if (kpiR) kpiR.textContent = rAll;
+    if (kpiG) kpiG.innerHTML = `${realGreen} <span class="text-sm font-semibold text-emerald-600/70 opacity-80">(${gPct}%)</span>`;
+    if (kpiY) kpiY.innerHTML = `${yAll} <span class="text-sm font-semibold text-amber-500/70 opacity-80">(${yPct}%)</span>`;
+    if (kpiR) kpiR.innerHTML = `${rAll} <span class="text-sm font-semibold text-rose-600/70 opacity-80">(${rPct}%)</span>`;
 
     // ── Plugin hiển thị số % ở giữa donut ──
     const centerTextPlugin = {
@@ -1557,8 +1641,8 @@ function renderAnalytics() {
     all.forEach(s => statusMap[s.mssv] = (s.status || 'green'));
 
     const majorStats = {};
-    if (rosterCache && rosterCache.length > 0) {
-        rosterCache.forEach(s => {
+    if (accessibleStudents && accessibleStudents.length > 0) {
+        accessibleStudents.forEach(s => {
             if (!s.nganh) return;
             const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
             if (userMajors.length > 0 && !sMajors.some(m => userMajors.includes(m))) return;
@@ -1586,6 +1670,7 @@ function renderAnalytics() {
             ]
         },
         options: {
+            indexAxis: 'y',
             responsive: true, maintainAspectRatio: false,
             plugins: {
                 legend: { labels: { font: { family: 'Inter', size: 11 }, usePointStyle: true, pointStyleWidth: 10, padding: 16 } },
@@ -1601,8 +1686,8 @@ function renderAnalytics() {
                 }
             },
             scales: {
-                x: { stacked: true, grid: { display: false }, ticks: { font: { family: 'Inter', size: 11, weight: '600' } } },
-                y: { stacked: true, beginAtZero: true, ticks: { stepSize: 5, font: { family: 'Inter', size: 11 } }, grid: { color: '#f1f5f9' } }
+                y: { stacked: true, grid: { display: false }, ticks: { font: { family: 'Inter', size: 11, weight: '600' } } },
+                x: { stacked: true, beginAtZero: true, ticks: { stepSize: 5, font: { family: 'Inter', size: 11 } }, grid: { color: '#f1f5f9' } }
             }
         }
     });
@@ -1849,6 +1934,31 @@ function getTargetStudentsForNotif() {
             const hasFeedback = (s.feedbacks && s.feedbacks.length > 0);
             if (!isRedOrYellow && !hasFeedback) return false;
 
+            const isCtsv = State.user && State.user.rawRole === 'CTSV';
+            const isGvCnbm = State.user && ['GV', 'CNBM'].includes(State.user.rawRole);
+
+            // VỚI CTSV: LUÔN CHO QUA VÒNG LỌC 24H VÀ ĐÃ ĐỌC
+            if (isCtsv) return true;
+
+            const latestTime = getLatestTime(s);
+            const FIFTEEN_DAYS_MS = 15 * 24 * 60 * 60 * 1000;
+            if (isGvCnbm && (now - latestTime) > FIFTEEN_DAYS_MS) {
+                return false; // Quá 15 ngày -> tắt thông báo
+            }
+
+            // BỎ RULE 24H CHO GV/CNBM CHỈ KHI CÓ CTSV FEEDBACK CHƯA XỬ LÝ (29/06 + 01/07)
+            if (isGvCnbm && s.feedbacks && s.feedbacks.length > 0) {
+                 const ctsvFbs = s.feedbacks.filter(f => f.role === 'CTSV' && !f.parent_id);
+                 if (ctsvFbs.length > 0) {
+                     const latestCtsvFb = ctsvFbs.sort((a,b) => new Date(b.created_at) - new Date(a.created_at))[0];
+                     const hasReacted = latestCtsvFb.reactions && latestCtsvFb.reactions.some(r => r.code === State.user.code);
+                     const userLaterFbs = s.feedbacks.filter(f => f.author_code === State.user.code && new Date(f.created_at) > new Date(latestCtsvFb.created_at));
+                     
+                     // Nếu feedback gốc mới nhất từ CTSV chưa được thả tim và GV chưa comment sau đó -> BẮT BUỘC hiện thông báo (đã lọc 15 ngày ở trên)
+                     if (!hasReacted && userLaterFbs.length === 0) return true;
+                 }
+            }
+
             // ĐÃ ĐỌC (Toàn cục): Nếu user hiện tại đã thả tim vào feedback MỚI NHẤT 
             // hoặc chính họ là người viết feedback mới nhất, thì tắt noti cho user này.
             if (s.feedbacks && s.feedbacks.length > 0 && State.user) {
@@ -1863,9 +1973,36 @@ function getTargetStudentsForNotif() {
             }
 
             // Check xem thời gian cập nhật có nằm trong 24h qua không
-            const latestTime = getLatestTime(s);
             return (now - latestTime) <= ONE_DAY_MS;
         });
+
+    // --- BƯỚC 2: CÁC ĐIỀU KIỆN LỌC CHUYÊN SÂU DÀNH CHO CTSV ---
+    if (State.user && State.user.rawRole === 'CTSV') {
+        targetStudents = targetStudents.filter(s => {
+            const fbs = s.feedbacks || [];
+            if (fbs.length === 0) return false;
+            
+            // Tìm feedback mới nhất
+            const latestFb = fbs.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
+            
+            // 1. Nếu comment mới nhất là của CTSV -> Bỏ qua (Đã xử lý)
+            if (latestFb.role === 'CTSV') return false;
+            
+            // 2. Nếu CTSV đã thả tim (Đánh dấu đã đọc thủ công) -> Bỏ qua
+            if (latestFb.reactions && latestFb.reactions.some(r => r.code === State.user.code)) return false;
+            
+            // 3. Nếu comment mới nhất chỉ là reply -> Bỏ qua
+            if (latestFb.parent_id != null) return false;
+
+            const hasEscalate = latestFb.content && latestFb.content.includes('[CẦN CTSV HỖ TRỢ]');
+            
+            // 4. Trạng thái Vàng/Xanh mà KHÔNG CÓ tag yêu cầu hỗ trợ -> Bỏ qua
+            if (s.status !== 'red' && !hasEscalate) return false;
+
+            // Cuối cùng: Thỏa mãn tất cả sẽ được đưa vào danh sách thông báo
+            return true;
+        });
+    }
 
     if (State.user && State.user.rawRole === 'GV') {
         const ucode = State.user.code.toLowerCase();
